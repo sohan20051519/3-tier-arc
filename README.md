@@ -87,6 +87,7 @@ task-manager/
 │   ├── Dockerfile                  # Multi-stage build (Node builder -> Nginx runner)
 │   ├── nginx.conf                  # Nginx static asset & SPA routing config
 │   ├── package.json
+│   ├── package-lock.json           # Lockfile for deterministic npm ci builds
 │   ├── tsconfig.json
 │   ├── vite.config.ts
 │   ├── .dockerignore
@@ -106,6 +107,7 @@ task-manager/
 │   │   └── tasks.test.ts
 │   ├── Dockerfile                  # Multi-stage build (Node builder -> Non-root runner)
 │   ├── package.json                # Includes `npm run build` (tsc) and `npm start` (node dist/server.js)
+│   ├── package-lock.json           # Lockfile for deterministic npm ci builds
 │   ├── tsconfig.json               # TypeScript ES2022 / NodeNext compiler options
 │   ├── .dockerignore
 │   └── .env.example
