@@ -269,3 +269,164 @@ npm test
 | `POST` | `/api/tasks` | Create a new task | `{"title": "...", "description": "..."}` | `201`, `400` |
 | `PUT` | `/api/tasks/:id` | Update completion state | `{"completed": true}` | `200`, `400`, `404` |
 | `DELETE` | `/api/tasks/:id` | Delete a task | None | `200`, `400`, `404` |
+
+---
+
+## 9. CI/CD Pipeline (GitHub Actions)
+
+A fully automated, zero-trust production CI/CD pipeline is implemented in `.github/workflows/ci-cd.yml`.
+
+### Pipeline Execution Flow
+
+```text
+git push origin main (or workflow_dispatch)
+    │
+    ▼
+1. Test & Build Validation (npm ci, backend vitest, tsc build, frontend build)
+    │
+    ▼
+2. SonarQube Analysis & Quality Gate (sonarsource/sonarqube-scan-action & quality-gate-action)
+    │  └─► If Quality Gate fails: STOP
+    ▼
+3. Docker Build & Security Scan
+    ├─► Build taskmanager-frontend:${GITHUB_SHA} & :latest
+    ├─► Build taskmanager-backend:${GITHUB_SHA} & :latest
+    ├─► Trivy Vulnerability Scan (Frontend Image) ──► Fail on HIGH/CRITICAL
+    ├─► Trivy Vulnerability Scan (Backend Image)  ──► Fail on HIGH/CRITICAL
+    └─► Push verified images to GitHub Container Registry (ghcr.io)
+    │
+    ▼
+4. Production Deployment via AWS SSM (OIDC Authentication)
+    ├─► Authenticate to AWS via OIDC (Role Assumption, No Long-Lived Keys)
+    ├─► Deploy Backend to Backend EC2 (10.0.10.164)
+    │     ├── Pull exact SHA image from GHCR
+    │     ├── Update backend container (Port 5000)
+    │     ├── Preserve PostgreSQL volume (`postgres_data`) intact
+    │     └── Verify health: http://10.0.10.164:5000/api/health
+    ├─► Deploy Frontend to Frontend EC2 (10.0.10.39)
+    │     ├── Pull exact SHA image from GHCR
+    │     ├── Start frontend container (Port 80)
+    │     └── Verify HTTP 200 on port 80
+    └─► Verify Public Nginx reverse proxy endpoint
+```
+
+### GitHub Secrets & Variables
+
+#### Required GitHub Secrets (`Settings -> Secrets and variables -> Actions -> Secrets`)
+| Secret Name | Description | Example / Note |
+| :--- | :--- | :--- |
+| `SONAR_TOKEN` | Authentication token for SonarQube project analysis | Created in SonarQube User/Project Security |
+| `SONAR_HOST_URL` | Endpoint of SonarQube Server | `http://3.110.114.245:9000` |
+| `AWS_DEPLOY_ROLE_ARN` | IAM Role ARN assumed by GitHub Actions via OIDC | `arn:aws:iam::<ACCOUNT_ID>:role/github-actions-taskmanager-deploy-role` |
+
+#### Recommended GitHub Variables (`Settings -> Secrets and variables -> Actions -> Variables`)
+| Variable Name | Description | Default / Example |
+| :--- | :--- | :--- |
+| `AWS_REGION` | AWS Region where EC2 instances reside | `ap-south-1` |
+| `BACKEND_INSTANCE_ID` | EC2 Instance ID for Backend + Database (Optional if using tags) | `i-0123456789abcdef0` |
+| `FRONTEND_INSTANCE_ID` | EC2 Instance ID for Frontend Web App (Optional if using tags) | `i-0abcdef0123456789` |
+| `PUBLIC_NGINX_HOST` | Public IP or domain of Public Nginx EC2 (for health check validation) | `3.110.114.245` |
+
+---
+
+### AWS OIDC & IAM Setup (Least-Privilege)
+
+To authenticate GitHub Actions to AWS without storing long-lived access keys:
+
+1. **Create Identity Provider**:
+   - Provider Type: `OpenID Connect`
+   - Provider URL: `https://token.actions.githubusercontent.com`
+   - Audience: `sts.amazonaws.com`
+
+2. **IAM Role Trust Policy (`github-actions-taskmanager-deploy-role`)**:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": {
+           "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+         },
+         "Action": "sts:AssumeRoleWithWebIdentity",
+         "Condition": {
+           "StringEquals": {
+             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+           },
+           "StringLike": {
+             "token.actions.githubusercontent.com:sub": "repo:<GITHUB_OWNER>/<GITHUB_REPO>:*"
+           }
+         }
+       }
+     ]
+   }
+   ```
+
+3. **IAM Role Permission Policy**:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Sid": "SSMSendCommand",
+         "Effect": "Allow",
+         "Action": [
+           "ssm:SendCommand",
+           "ssm:ListCommands",
+           "ssm:ListCommandInvocations",
+           "ssm:GetCommandInvocation",
+           "ssm:DescribeInstanceInformation"
+         ],
+         "Resource": "*"
+       },
+       {
+         "Sid": "EC2DescribeForTargeting",
+         "Effect": "Allow",
+         "Action": [
+           "ec2:DescribeInstances",
+           "ec2:DescribeTags"
+         ],
+         "Resource": "*"
+       }
+     ]
+   }
+   ```
+
+---
+
+### EC2 Security Groups & Network Rules
+
+| Instance | Role | Inbound Ports Allowed | Source / Notes |
+| :--- | :--- | :--- | :--- |
+| **Nginx EC2** (`10.0.1.148`) | Public Reverse Proxy | `80/TCP`, `443/TCP` | `0.0.0.0/0` (Public Internet) |
+| **Frontend EC2** (`10.0.10.39`) | Private Frontend App | `80/TCP` | `10.0.1.148/32` (Only Nginx EC2 private IP) |
+| **Backend EC2** (`10.0.10.164`) | Private REST API & DB | `5000/TCP` | `10.0.1.148/32` (Only Nginx EC2 private IP). **Port 5000 is NEVER exposed to 0.0.0.0/0**. Port 5432 is internal to Docker. |
+| **SonarQube Server** | Code Quality Analysis | `9000/TCP` | GitHub Actions Runner IP range or Authorized Admin CIDR |
+
+---
+
+### Rollback Procedure
+
+All production container images are tagged with their immutable commit SHA:
+`ghcr.io/<owner>/<repo>/taskmanager-backend:<COMMIT_SHA>`
+`ghcr.io/<owner>/<repo>/taskmanager-frontend:<COMMIT_SHA>`
+
+To instantly roll back to a previous verified release:
+1. Identify the desired previous commit SHA (e.g., `abc1234`).
+2. Run the workflow manually via **Actions &rarr; CI/CD Pipeline &rarr; Run workflow** on the previous commit, or execute SSM commands with the target SHA image tag:
+   ```bash
+   # On Backend EC2 via SSM:
+   docker pull ghcr.io/<owner>/<repo>/taskmanager-backend:abc1234
+   docker stop taskmanager-backend && docker rm taskmanager-backend
+   docker run -d --name taskmanager-backend --restart unless-stopped --network backend-db-network -p 5000:5000 \
+     -e PORT=5000 -e NODE_ENV=production -e DB_HOST=postgres -e DB_PORT=5432 \
+     -e DB_NAME=taskmanager_db -e DB_USER=postgres -e DB_PASSWORD=postgres_secure_password \
+     ghcr.io/<owner>/<repo>/taskmanager-backend:abc1234
+
+   # On Frontend EC2 via SSM:
+   docker pull ghcr.io/<owner>/<repo>/taskmanager-frontend:abc1234
+   docker stop taskmanager-frontend && docker rm taskmanager-frontend
+   docker run -d --name taskmanager-frontend --restart unless-stopped -p 80:80 \
+     ghcr.io/<owner>/<repo>/taskmanager-frontend:abc1234
+   ```
+
