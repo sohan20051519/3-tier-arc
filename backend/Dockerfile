@@ -1,16 +1,20 @@
-# Production Dockerfile for Node.js Express Backend
+# Multi-stage production Dockerfile for Node.js Express Backend
+# Stage 1: Build stage
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies first for Docker caching
-COPY package*.json ./
+# Install all dependencies (including devDependencies for TypeScript compilation)
+COPY package*.json tsconfig.json ./
 RUN npm ci
 
-# Copy application source
-COPY . .
+# Copy backend source code
+COPY src/ ./src/
 
-# Multi-stage production image
+# Compile TypeScript to JavaScript in /app/dist
+RUN npm run build
+
+# Stage 2: Production runner stage
 FROM node:20-alpine AS runner
 
 WORKDIR /app
@@ -19,15 +23,16 @@ ENV NODE_ENV=production
 
 # Install only production dependencies
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Copy source files
-COPY --from=builder /app/src ./src
+# Copy compiled JavaScript output from builder stage
+COPY --from=builder --chown=node:node /app/dist ./dist
 
-# Expose backend port
+# Expose backend REST API port
 EXPOSE 5000
 
-# Run the backend service using non-root user
+# Run as non-root node user for container security
 USER node
 
-CMD ["node", "src/server.ts"]
+# Start the compiled production server
+CMD ["node", "dist/server.js"]

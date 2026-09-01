@@ -1,0 +1,20 @@
+# AWS Production Compose Configuration for Frontend EC2 Instance
+# Target: Private Subnet EC2 (Frontend Tier)
+# Serves static React SPA assets on port 80 to the public Nginx reverse proxy
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: taskmanager-frontend:latest
+    container_name: taskmanager-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:80/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s

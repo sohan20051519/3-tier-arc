@@ -1,234 +1,269 @@
 # Task Manager (3-Tier Web Application)
 
-A clean, modular 3-tier **Task Manager** application engineered for containerization and automated cloud deployment (e.g. Docker, Docker Compose, AWS VPC with public/private subnets, Amazon ECR, and CI/CD pipelines).
+A clean, production-ready 3-tier **Task Manager** application designed for containerization and multi-tier AWS cloud deployment.
 
 ---
 
-## 1. What the Application Does
+## 1. Architecture Overview
 
-The Task Manager allows users to:
-- **View all tasks** (retrieved from the PostgreSQL database through the REST API)
-- **Create new tasks** with a title and optional description
-- **Toggle completion status** between pending and completed
-- **Delete tasks**
-- **Monitor system health** via the `/api/health` probe endpoint (checking backend uptime and database connectivity)
+### Target AWS Deployment Architecture
 
----
-
-## 2. Architecture
-
-The application follows a standard **3-tier architecture**:
+In the target AWS deployment, the tiers are separated across distinct EC2 instances across Public and Private subnets:
 
 ```text
-                Browser
-                   |
-                   v
-             React Frontend
-                   |
-                   | HTTP
-                   v
-             Express Backend
-                   |
-                   | SQL
-                   v
-               PostgreSQL
+Internet
+   │
+   ▼
+Public Subnet
+   │
+   └── Nginx EC2 (Reverse Proxy / Ingress)
+       │
+       ├── HTTP / HTTPS (:80 / :443)
+       │
+       ▼
+Private Subnet
+   │
+   ├── Frontend EC2 (:80)
+   │     │
+   │     └── Frontend Docker Container (`taskmanager-frontend`)
+   │
+   └── Backend + Database EC2
+         │
+         ├── Backend Docker Container (`taskmanager-backend` :5000)
+         │     │
+         │     └── Docker Internal Bridge Network (`backend-db-network`)
+         │           │
+         │           ▼
+         └── PostgreSQL Docker Container (`taskmanager-postgres` :5432)
 ```
 
-### AWS VPC Deployment Mapping (Target Architecture)
-- **Public Subnet**: React Frontend (served via Nginx reverse proxy or S3/CloudFront) with Internet Gateway access.
-- **Private App Subnet**: Node.js / Express REST API backend running on private EC2 or ECS tasks.
-- **Private Data Subnet**: PostgreSQL database (or Amazon RDS PostgreSQL) isolated with security groups accepting traffic only from the backend tier.
+### Traffic Flow & Network Routing
+
+```text
+Browser Client
+   │
+   ▼
+Nginx EC2 (:80/:443)
+   │
+   ├── / (SPA Root & Static Assets) ────────► Frontend EC2 (:80)
+   │
+   └── /api/* (REST API Calls) ─────────────► Backend EC2 (:5000)
+                                                    │
+                                                    ▼
+                                            PostgreSQL (:5432 internal)
+```
+
+### Key Network & Security Isolations:
+1. **Frontend and Backend on Separate Hosts**: The frontend container runs on a dedicated Frontend EC2 instance, while the backend and database run on a separate Backend+DB EC2 instance.
+2. **PostgreSQL Isolation**: PostgreSQL runs in an isolated Docker bridge network on the Backend+DB EC2 instance. Port 5432 is **never** published to the host or internet. Only the backend container can reach PostgreSQL via the Docker service name (`postgres`).
+3. **No Private IPs in Browser**: The browser interacts exclusively with the public Nginx reverse proxy. All frontend API requests use relative `/api` paths (`/api/tasks`, `/api/health`).
+4. **Independent Frontend Nginx**: The frontend container's internal Nginx configuration only serves static React files and handles SPA client-side routing (`try_files $uri $uri/ /index.html`). It does not assume or require a local backend container on the same host.
 
 ---
 
-## 3. Technology Stack
+## 2. Technology Stack
 
-| Layer | Technology | Details |
-| :--- | :--- | :--- |
-| **Frontend (Tier 1)** | React 19, Vite, TypeScript, Tailwind CSS | Responsive SPA with optimistic UI and live status indicators |
-| **Backend (Tier 2)** | Node.js, Express, TypeScript | Layered REST API (Routes &rarr; Controllers &rarr; Services &rarr; DB pool) |
-| **Database (Tier 3)** | PostgreSQL 16 | Relational store with migration scripts and indexing |
-| **Orchestration** | Docker, Docker Compose | Multi-stage Dockerfiles and custom bridge networking |
-| **Testing** | Vitest, Supertest | Automated integration tests for all REST endpoints |
+| Tier | Component | Technology | Container Name |
+| :--- | :--- | :--- | :--- |
+| **Tier 1 (Frontend)** | Web UI / SPA | React 19, Vite, TypeScript, Tailwind CSS, Nginx | `taskmanager-frontend` |
+| **Tier 2 (Backend)** | REST API | Node.js 20, Express, TypeScript (Compiled to `dist/`) | `taskmanager-backend` |
+| **Tier 3 (Database)** | Persistent Data | PostgreSQL 16 (Alpine), Named Volume | `taskmanager-postgres` |
+| **Ingress / Routing** | Reverse Proxy | Nginx (EC2 Ingress) | — |
 
 ---
 
-## 4. Project Structure
+## 3. Project Structure
 
 ```text
 task-manager/
-│
 ├── frontend/                       # Tier 1: React Single Page Application
 │   ├── src/
 │   │   ├── components/             # UI Components (TaskForm, TaskList, TaskItem)
-│   │   ├── services/               # HTTP client (api.ts)
-│   │   ├── types.ts                # TypeScript interface definitions
+│   │   ├── services/               # HTTP client (api.ts - uses relative /api)
+│   │   ├── types.ts                # Shared TypeScript interfaces
 │   │   ├── App.tsx                 # Main application view
 │   │   ├── main.tsx                # React DOM entrypoint
 │   │   └── index.css               # Global stylesheet
-│   ├── public/                     # Static assets
-│   ├── Dockerfile                  # Multi-stage Nginx build
-│   ├── nginx.conf                  # Nginx proxy configuration
+│   ├── Dockerfile                  # Multi-stage build (Node builder -> Nginx runner)
+│   ├── nginx.conf                  # Nginx static asset & SPA routing config
 │   ├── package.json
-│   ├── .env.example
-│   └── README.md
+│   ├── tsconfig.json
+│   ├── vite.config.ts
+│   ├── .dockerignore
+│   └── .env.example
 │
 ├── backend/                        # Tier 2: Express REST API
 │   ├── src/
 │   │   ├── controllers/            # Request handlers (taskController.ts)
 │   │   ├── routes/                 # API route declarations (tasks.ts)
-│   │   ├── services/               # Business logic & SQL queries (taskService.ts)
+│   │   ├── services/               # Business logic & database operations (taskService.ts)
 │   │   ├── db/                     # PostgreSQL pool & connection manager (database.ts)
 │   │   ├── middleware/             # Centralized error handler (errorHandler.ts)
 │   │   ├── app.ts                  # Express application setup & CORS
-│   │   └── server.ts               # Standalone server entrypoint
-│   ├── tests/                      # Automated API integration tests
+│   │   └── server.ts               # Server entrypoint
+│   ├── dist/                       # Compiled JavaScript output (generated on build)
+│   ├── tests/                      # Automated API integration tests (Vitest + Supertest)
 │   │   └── tasks.test.ts
-│   ├── Dockerfile                  # Multi-stage Node.js container build
-│   ├── package.json
-│   ├── .env.example
-│   └── README.md
+│   ├── Dockerfile                  # Multi-stage build (Node builder -> Non-root runner)
+│   ├── package.json                # Includes `npm run build` (tsc) and `npm start` (node dist/server.js)
+│   ├── tsconfig.json               # TypeScript ES2022 / NodeNext compiler options
+│   ├── .dockerignore
+│   └── .env.example
 │
 ├── database/                       # Tier 3: Database Schemas & Migrations
 │   ├── migrations/
 │   │   └── 001_create_tasks_table.sql
-│   └── init.sql                    # Initial seed & table definition for Docker
+│   └── init.sql                    # Initial seed & table definition for Docker initialization
 │
-├── docker-compose.yml              # Local multi-container orchestration
-├── .gitignore
+├── docker-compose.backend.yml      # AWS deployment compose for Backend + PostgreSQL EC2
+├── docker-compose.frontend.yml     # AWS deployment compose for Frontend EC2
+├── docker-compose.yml              # Local development all-in-one orchestration
 ├── .env.example
 └── README.md
 ```
 
 ---
 
-## 5. Environment Variables
+## 4. Environment Variables Configuration
 
-### Root / Backend (`backend/.env` or `.env`)
+### Backend & Database (`backend/.env` or deployment environment)
 ```env
 PORT=5000
-NODE_ENV=development
+NODE_ENV=production
 
-# PostgreSQL Database Configuration
-DB_HOST=localhost
+# PostgreSQL Connection
+DB_HOST=postgres
 DB_PORT=5432
 DB_NAME=taskmanager_db
 DB_USER=postgres
-DB_PASSWORD=postgres
+DB_PASSWORD=your_secure_db_password_here
 ```
 
 ### Frontend (`frontend/.env`)
 ```env
-# URL for the Express Backend API
-# In development without reverse proxy:
-VITE_API_URL=http://localhost:5000
+# In production (behind Nginx reverse proxy): leave empty to use relative /api
+VITE_API_URL=
 
-# When using Nginx reverse proxy or Docker Compose, leave empty to use relative /api path:
-# VITE_API_URL=
+# In local standalone development without reverse proxy:
+# VITE_API_URL=http://localhost:5000
 ```
 
 ---
 
-## 6. Running Without Docker
+## 5. Production AWS Deployment Guide
 
-### Prerequisites
-- Node.js (v20+)
-- PostgreSQL (v14+) running locally
+### A. Deploying the Backend + Database EC2 Instance
+On the **Backend + Database EC2 instance**:
+1. Copy the codebase or Docker Compose configuration.
+2. Provide database credentials via environment variables or a `.env` file.
+3. Start the Backend and PostgreSQL containers:
+   ```bash
+   docker compose -f docker-compose.backend.yml up --build -d
+   ```
+4. Verify container health:
+   ```bash
+   docker compose -f docker-compose.backend.yml ps
+   ```
+   - `taskmanager-postgres`: Healthy, database port 5432 accessible **only** within `backend-db-network`.
+   - `taskmanager-backend`: Healthy, listening on port 5000 for internal VPC traffic from Nginx.
 
-### 1. Database Setup
-```bash
-psql -U postgres -c "CREATE DATABASE taskmanager_db;"
-psql -U postgres -d taskmanager_db -f database/migrations/001_create_tasks_table.sql
-```
+### B. Deploying the Frontend EC2 Instance
+On the **Frontend EC2 instance**:
+1. Build and run the frontend container:
+   ```bash
+   docker compose -f docker-compose.frontend.yml up --build -d
+   ```
+2. Verify frontend container is healthy:
+   ```bash
+   docker compose -f docker-compose.frontend.yml ps
+   ```
+   - `taskmanager-frontend`: Serving static React build on port 80.
 
-### 2. Start Backend API
-```bash
-cd backend
-npm install
-npm run dev
-# Backend starts on http://localhost:5000
-```
+### C. Nginx Reverse Proxy Configuration (Public Ingress EC2)
+On the **Public Nginx EC2**:
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com; # or public IP
 
-### 3. Start Frontend Web App
-```bash
-cd frontend
-npm install
-npm run dev
-# Frontend starts on http://localhost:5173
+    # Route frontend static requests to Frontend EC2 private IP
+    location / {
+        proxy_pass http://<FRONTEND_EC2_PRIVATE_IP>:80;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Route API requests to Backend EC2 private IP
+    location /api/ {
+        proxy_pass http://<BACKEND_EC2_PRIVATE_IP>:5000/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
 ```
 
 ---
 
-## 7. Running With Docker Compose
+## 6. Local Development
 
-Docker Compose orchestrates all 3 tiers (`frontend`, `backend`, `postgres`) connected through an isolated bridge network (`task-network`).
-
+### Option 1: All-in-One Docker Compose
+To run all tiers locally on a single machine:
 ```bash
-# Build and start all 3 containers in the background
 docker compose up --build -d
-
-# Verify all containers are healthy
-docker compose ps
-
-# View real-time logs
-docker compose logs -f
-
-# Stop and remove containers and network
-docker compose down
 ```
+- Frontend UI: `http://localhost:80`
+- Backend API: `http://localhost:5000`
+- Health Probe: `http://localhost:5000/api/health`
 
-### Accessing Services
-- **Frontend Web UI**: `http://localhost` (Port 80)
-- **Backend API**: `http://localhost:5000` (Port 5000)
-- **Health Check Endpoint**: `http://localhost:5000/api/health`
+### Option 2: Running Without Docker (Native Node.js)
+1. **Database**: Start local PostgreSQL on port 5432 and run `database/init.sql`.
+2. **Backend**:
+   ```bash
+   cd backend
+   npm install
+   npm run build
+   npm start # or npm run dev for hot reloading
+   ```
+3. **Frontend**:
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
 
 ---
 
-## 8. Running Automated Tests
+## 7. Automated Testing & Verification
 
-Integration tests verify all REST endpoints using Vitest and Supertest:
-
+Run the integration test suite:
 ```bash
-# Run tests from the project root
-npm run test
-
-# Or run tests directly inside the backend directory
 cd backend
 npm test
 ```
 
-### Verified Test Cases:
-- `GET /api/health` &rarr; Verifies 200 OK and database connectivity probe
-- `GET /api/tasks` &rarr; Verifies 200 OK and JSON task collection
-- `POST /api/tasks` &rarr; Validates task creation (201 Created) and title requirement rejection (400)
-- `PUT /api/tasks/:id` &rarr; Validates completion toggle (200 OK), non-boolean rejection (400), and not-found handling (404)
-- `DELETE /api/tasks/:id` &rarr; Validates deletion (200 OK) and 404 for nonexistent tasks
+### Verified Test Suite:
+- `GET /api/health` &rarr; 200 OK, returns server uptime and database connectivity probe.
+- `GET /api/tasks` &rarr; 200 OK, returns list of tasks.
+- `POST /api/tasks` &rarr; 201 Created on valid input; 400 Bad Request on missing title.
+- `PUT /api/tasks/:id` &rarr; 200 OK on valid status toggle; 400 on invalid type; 404 on nonexistent task.
+- `DELETE /api/tasks/:id` &rarr; 200 OK on deletion; 404 on nonexistent task.
 
 ---
 
-## 9. REST API Endpoints
+## 8. REST API Endpoints
 
-| Method | Endpoint | Description | Request Body | Response Codes |
+| Method | Endpoint | Description | Request Body | Status Codes |
 | :--- | :--- | :--- | :--- | :--- |
-| `GET` | `/api/health` | Health probe & DB status | None | `200` |
-| `GET` | `/api/tasks` | Get all tasks | None | `200` |
-| `POST` | `/api/tasks` | Create new task | `{"title": "string", "description": "string"}` | `201`, `400` |
+| `GET` | `/api/health` | Health probe & DB connectivity | None | `200` |
+| `GET` | `/api/tasks` | Fetch all tasks | None | `200` |
+| `POST` | `/api/tasks` | Create a new task | `{"title": "...", "description": "..."}` | `201`, `400` |
 | `PUT` | `/api/tasks/:id` | Update completion state | `{"completed": true}` | `200`, `400`, `404` |
-| `DELETE` | `/api/tasks/:id` | Delete task | None | `200`, `400`, `404` |
-
----
-
-## 10. Database Schema
-
-```sql
-CREATE TABLE tasks (
-    id SERIAL PRIMARY KEY,
-    title VARCHAR(255) NOT NULL,
-    description TEXT,
-    completed BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX idx_tasks_completed ON tasks (completed);
-CREATE INDEX idx_tasks_created_at ON tasks (created_at DESC);
-```
+| `DELETE` | `/api/tasks/:id` | Delete a task | None | `200`, `400`, `404` |
