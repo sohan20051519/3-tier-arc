@@ -26,10 +26,8 @@ RUN apk update && apk upgrade --no-cache
 
 # Install only production dependencies
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
-
-# Remove corepack to eliminate build-tool CVE surface in production runtime
-RUN rm -rf /usr/local/lib/node_modules/corepack /root/.npm
+RUN npm ci --omit=dev && npm cache clean --force \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /usr/local/lib/node_modules/corepack /root/.npm
 
 # Copy compiled JavaScript output from builder stage
 COPY --from=builder --chown=node:node /app/dist ./dist
