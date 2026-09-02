@@ -417,11 +417,7 @@ To instantly roll back to a previous verified release:
    ```bash
    # On Backend EC2 via SSM:
    docker pull ghcr.io/<owner>/<repo>/taskmanager-backend:abc1234
-   docker stop taskmanager-backend && docker rm taskmanager-backend
-   docker run -d --name taskmanager-backend --restart unless-stopped --network backend-db-network -p 5000:5000 \
-     -e PORT=5000 -e NODE_ENV=production -e DB_HOST=postgres -e DB_PORT=5432 \
-     -e DB_NAME=taskmanager_db -e DB_USER=postgres -e DB_PASSWORD=postgres_secure_password \
-     ghcr.io/<owner>/<repo>/taskmanager-backend:abc1234
+   BACKEND_IMAGE="ghcr.io/<owner>/<repo>/taskmanager-backend:abc1234" docker compose -f docker-compose.backend.yml up -d --no-build --no-deps backend
 
    # On Frontend EC2 via SSM:
    docker pull ghcr.io/<owner>/<repo>/taskmanager-frontend:abc1234

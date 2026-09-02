@@ -254,7 +254,7 @@ No long-lived access keys (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) are st
 
 - **Private Network Isolation**: The Backend EC2 instance resides in a private subnet. Port `5000` is **NOT** exposed to `0.0.0.0/0`.
 - **Targeting**: Dispatches SSM command to `${{ vars.BACKEND_INSTANCE_ID }}` or instances tagged `Role=backend` and `Name=taskmanager-backend`.
-- **Container Execution**: Runs with `--restart unless-stopped -p 5000:5000 -e PORT=5000 -e NODE_ENV=production`.
+- **Container Execution**: Deploys via `BACKEND_IMAGE="$BACKEND_IMAGE" docker compose -f docker-compose.backend.yml up -d --no-build --no-deps backend`, preserving the PostgreSQL container, internal bridge network (`backend-db-network`), `.env` configuration, and data volumes.
 - **Health Verification**: Retries up to 12 times (60 seconds total) querying `http://localhost:5000/api/health`.
 - Validates that the response includes:
   - `"status": "ok"`
@@ -320,11 +320,10 @@ The backend container connects to PostgreSQL over TCP port 5432.
 
 Before stopping the active container during SSM deployment:
 1. The script inspects the running container and saves the previous image tag (`PREV_IMAGE=$(docker inspect -f '{{.Config.Image}}' ...)`).
-2. The new immutable SHA container is started.
-3. Health verification runs.
+2. The new immutable SHA container is started via `docker compose -f docker-compose.backend.yml up -d --no-build --no-deps backend`.
+3. Health verification runs against `http://localhost:5000/api/health` checking for `"status":"ok"` and `"dbConnected":true`.
 4. If health checks fail or time out:
-   - The failing container is stopped and removed.
-   - The previous working container (`$PREV_IMAGE`) is restarted immediately.
+   - Safe rollback is automatically triggered: `BACKEND_IMAGE="$PREV_IMAGE" docker compose -f docker-compose.backend.yml up -d --no-build --no-deps backend`.
    - The deployment script exits with code `1` so GitHub Actions marks the build as failed and alerts the team.
 
 ---
