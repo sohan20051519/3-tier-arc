@@ -18,7 +18,7 @@ jobs:
   # Stage 1: Automated Tests & Builds (Frontend & Backend)
   # ============================================================================
   test:
-    name: Test & Build Validation
+    name: "[CI] Test & Build Validation"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -33,26 +33,37 @@ jobs:
             backend/package-lock.json
             frontend/package-lock.json
 
-      - name: Install backend dependencies (npm ci)
-        run: npm --prefix backend ci
+      - name: "[CI] Installing dependencies"
+        run: |
+          echo "[CI] Installing backend dependencies (npm ci)..."
+          npm --prefix backend ci
+          echo "[CI] Installing frontend dependencies (npm ci)..."
+          npm --prefix frontend ci
 
-      - name: Run backend automated integration tests
-        run: npm --prefix backend test
+      - name: "[CI] Running backend tests"
+        run: |
+          echo "[CI] Running backend automated tests..."
+          if [ -f backend/package.json ] && grep -q '"test":' backend/package.json; then
+            npm --prefix backend test
+          else
+            echo "[CI] Notice: Backend tests not configured in package.json"
+          fi
 
-      - name: Build backend TypeScript
-        run: npm --prefix backend run build
+      - name: "[CI] Building backend"
+        run: |
+          echo "[CI] Building backend TypeScript..."
+          npm --prefix backend run build
 
-      - name: Install frontend dependencies (npm ci)
-        run: npm --prefix frontend ci
-
-      - name: Build frontend React application
-        run: npm --prefix frontend run build
+      - name: "[CI] Building frontend"
+        run: |
+          echo "[CI] Building frontend React application..."
+          npm --prefix frontend run build
 
   # ============================================================================
   # Stage 2: SonarQube Static Code Analysis & Quality Gate
   # ============================================================================
   sonarqube:
-    name: SonarQube Analysis & Quality Gate
+    name: "[SONAR] SonarQube Analysis & Quality Gate"
     runs-on: ubuntu-latest
     needs: test
     steps:
@@ -61,13 +72,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: SonarQube Scanner
+      - name: "[SONAR] Running analysis"
         uses: sonarsource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-      - name: SonarQube Quality Gate Check
+      - name: "[SONAR] Checking Quality Gate"
         uses: sonarsource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
         env:
@@ -78,7 +89,7 @@ jobs:
   # Stage 3: Docker Build, Trivy Security Scan & Registry Push
   # ============================================================================
   build-and-scan:
-    name: Docker Build, Trivy Scan & GHCR Push
+    name: "[DOCKER/TRIVY/GHCR] Build, Scan & Push"
     runs-on: ubuntu-latest
     needs: sonarqube
     permissions:
@@ -114,7 +125,7 @@ jobs:
           echo "backend_image=${BACKEND_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Build Frontend Docker Image (Local daemon)
+      - name: "[DOCKER] Building frontend image"
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
@@ -124,7 +135,7 @@ jobs:
             ${{ steps.meta.outputs.frontend_image }}:${{ steps.meta.outputs.image_tag }}
             ${{ steps.meta.outputs.frontend_image }}:latest
 
-      - name: Build Backend Docker Image (Local daemon)
+      - name: "[DOCKER] Building backend image"
         uses: docker/build-push-action@v6
         with:
           context: ./backend
@@ -134,7 +145,7 @@ jobs:
             ${{ steps.meta.outputs.backend_image }}:${{ steps.meta.outputs.image_tag }}
             ${{ steps.meta.outputs.backend_image }}:latest
 
-      - name: Trivy Vulnerability Scan (Frontend Image)
+      - name: "[TRIVY] Scanning frontend image"
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ steps.meta.outputs.frontend_image }}:${{ steps.meta.outputs.image_tag }}
@@ -144,7 +155,7 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
-      - name: Trivy Vulnerability Scan (Backend Image)
+      - name: "[TRIVY] Scanning backend image"
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ steps.meta.outputs.backend_image }}:${{ steps.meta.outputs.image_tag }}
@@ -154,13 +165,12 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
-      - name: Push Verified Frontend Image to GHCR
+      - name: "[GHCR] Pushing verified images"
         run: |
+          echo "[GHCR] Pushing verified frontend image (${{ steps.meta.outputs.frontend_image }}:${{ steps.meta.outputs.image_tag }})..."
           docker push "${{ steps.meta.outputs.frontend_image }}:${{ steps.meta.outputs.image_tag }}"
           docker push "${{ steps.meta.outputs.frontend_image }}:latest"
-
-      - name: Push Verified Backend Image to GHCR
-        run: |
+          echo "[GHCR] Pushing verified backend image (${{ steps.meta.outputs.backend_image }}:${{ steps.meta.outputs.image_tag }})..."
           docker push "${{ steps.meta.outputs.backend_image }}:${{ steps.meta.outputs.image_tag }}"
           docker push "${{ steps.meta.outputs.backend_image }}:latest"
 
@@ -168,7 +178,7 @@ jobs:
   # Stage 4: Production Deployment via AWS SSM (OIDC)
   # ============================================================================
   deploy:
-    name: Deploy to Private EC2 Instances via AWS SSM
+    name: "[DEPLOY] Deploy to Private EC2 Instances via AWS SSM"
     runs-on: ubuntu-latest
     needs: build-and-scan
     permissions:
@@ -178,22 +188,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials (OIDC)
+      - name: "[AWS] Authenticating through OIDC"
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
           audience: sts.amazonaws.com
 
-      # Deploy Backend to Backend EC2 (10.0.10.164)
-      - name: Deploy Backend Tier (10.0.10.164)
+      # Deploy Backend to Backend EC2
+      - name: "[DEPLOY] Deploying backend"
         env:
           BACKEND_IMAGE: ${{ needs.build-and-scan.outputs.backend_image }}:${{ needs.build-and-scan.outputs.image_tag }}
           BACKEND_INSTANCE_ID: ${{ vars.BACKEND_INSTANCE_ID }}
+          DB_SECRET_ARN: ${{ vars.DB_SECRET_ARN }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Initiating Backend EC2 Deployment with image: $BACKEND_IMAGE"
+          echo "[DEPLOY] Initiating Backend EC2 Deployment with image: $BACKEND_IMAGE"
           
           if [ -n "$BACKEND_INSTANCE_ID" ]; then
             TARGET_FLAG="--instance-ids $BACKEND_INSTANCE_ID"
@@ -207,33 +218,68 @@ jobs:
             --comment "Deploy Task Manager Backend ($BACKEND_IMAGE)" \
             --parameters "commands=[
               'set -e',
-              'echo \"Authenticating to GHCR...\"',
+              'echo \"[1/6] Authenticating to GitHub Container Registry...\"',
               'echo \"$GHCR_TOKEN\" | docker login ghcr.io -u \"$GHCR_USER\" --password-stdin',
-              'echo \"Pulling backend image $BACKEND_IMAGE...\"',
+              'echo \"[2/6] Pulling backend image: $BACKEND_IMAGE...\"',
               'docker pull \"$BACKEND_IMAGE\"',
-              'echo \"Updating backend container while preserving PostgreSQL persistent volume...\"',
-              'docker stop taskmanager-backend || true',
-              'docker rm taskmanager-backend || true',
-              'docker network create backend-db-network || true',
-              'docker run -d --name taskmanager-backend --restart unless-stopped --network backend-db-network -p 5000:5000 -e PORT=5000 -e NODE_ENV=production -e DB_HOST=postgres -e DB_PORT=5432 -e DB_NAME=taskmanager_db -e DB_USER=postgres -e DB_PASSWORD=\${DB_PASSWORD:-postgres_secure_password} \"$BACKEND_IMAGE\"',
-              'echo \"Verifying backend health on localhost:5000/api/health...\"',
-              'sleep 5',
-              'for i in {1..12}; do',
-              '  HEALTH=\$(wget -qO- http://localhost:5000/api/health || curl -s http://localhost:5000/api/health || true)',
-              '  echo \"Attempt \$i response: \$HEALTH\"',
-              '  if echo \"\$HEALTH\" | grep -q \"status\" && echo \"\$HEALTH\" | grep -q \"ok\"; then',
-              '    echo \"Backend health check verified successfully!\"',
-              '    exit 0',
+              'echo \"[3/6] Inspecting current backend container state for safe rollback...\"',
+              'PREV_IMAGE=\$(docker inspect -f \"{{.Config.Image}}\" taskmanager-backend 2>/dev/null || echo \"\")',
+              'echo \"Previous image recorded: \${PREV_IMAGE:-none}\"',
+              'echo \"[4/6] Resolving runtime database configuration...\"',
+              'DB_ENV_FLAGS=\"\"',
+              'if [ -n \"$DB_SECRET_ARN\" ]; then',
+              '  echo \"Fetching database credentials from AWS Secrets Manager ($DB_SECRET_ARN)...\"',
+              '  SECRET_PAYLOAD=\$(aws secretsmanager get-secret-value --secret-id \"$DB_SECRET_ARN\" --query SecretString --output text 2>/dev/null || echo \"\")',
+              '  if [ -n \"\$SECRET_PAYLOAD\" ]; then',
+              '    DB_HOST=\$(echo \"\$SECRET_PAYLOAD\" | python3 -c \"import sys, json; d=json.load(sys.stdin); print(d.get(\x27host\x27, d.get(\x27DB_HOST\x27, \x27\x27)))\" 2>/dev/null || echo \"\")',
+              '    DB_PORT=\$(echo \"\$SECRET_PAYLOAD\" | python3 -c \"import sys, json; d=json.load(sys.stdin); print(d.get(\x27port\x27, d.get(\x27DB_PORT\x27, \x275432\x27)))\" 2>/dev/null || echo \"5432\")',
+              '    DB_NAME=\$(echo \"\$SECRET_PAYLOAD\" | python3 -c \"import sys, json; d=json.load(sys.stdin); print(d.get(\x27dbname\x27, d.get(\x27database\x27, d.get(\x27DB_NAME\x27, \x27taskmanager_db\x27))))\" 2>/dev/null || echo \"taskmanager_db\")',
+              '    DB_USER=\$(echo \"\$SECRET_PAYLOAD\" | python3 -c \"import sys, json; d=json.load(sys.stdin); print(d.get(\x27username\x27, d.get(\x27user\x27, d.get(\x27DB_USER\x27, \x27postgres\x27))))\" 2>/dev/null || echo \"postgres\")',
+              '    DB_PASSWORD=\$(echo \"\$SECRET_PAYLOAD\" | python3 -c \"import sys, json; d=json.load(sys.stdin); print(d.get(\x27password\x27, d.get(\x27DB_PASSWORD\x27, \x27\x27)))\" 2>/dev/null || echo \"\")',
+              '    DB_ENV_FLAGS=\"-e DB_HOST=\$DB_HOST -e DB_PORT=\$DB_PORT -e DB_NAME=\$DB_NAME -e DB_USER=\$DB_USER -e DB_PASSWORD=\$DB_PASSWORD\"',
+              '  fi',
+              'fi',
+              'if [ -z \"\$DB_ENV_FLAGS\" ] && [ -f /etc/taskmanager/backend.env ]; then',
+              '  echo \"Using environment configuration from /etc/taskmanager/backend.env\"',
+              '  DB_ENV_FLAGS=\"--env-file /etc/taskmanager/backend.env\"',
+              'elif [ -z \"\$DB_ENV_FLAGS\" ] && [ -f /opt/taskmanager/.env ]; then',
+              '  echo \"Using environment configuration from /opt/taskmanager/.env\"',
+              '  DB_ENV_FLAGS=\"--env-file /opt/taskmanager/.env\"',
+              'fi',
+              'echo \"[5/6] Deploying updated backend container...\"',
+              'docker stop taskmanager-backend 2>/dev/null || true',
+              'docker rm taskmanager-backend 2>/dev/null || true',
+              'docker run -d --name taskmanager-backend --restart unless-stopped -p 5000:5000 -e PORT=5000 -e NODE_ENV=production \$DB_ENV_FLAGS \"$BACKEND_IMAGE\"',
+              'echo \"[6/6] Verifying backend health on http://localhost:5000/api/health...\"',
+              'sleep 4',
+              'HEALTHY=0',
+              'for i in \$(seq 1 12); do',
+              '  RESPONSE=\$(wget -qO- --timeout=5 http://localhost:5000/api/health 2>/dev/null || curl -s --max-time 5 http://localhost:5000/api/health 2>/dev/null || echo \"\")',
+              '  echo \"Health check attempt \$i response: \$RESPONSE\"',
+              '  if echo \"\$RESPONSE\" | grep -q \x27\"status\":\x27 && echo \"\$RESPONSE\" | grep -q \x27\"ok\"\x27 && echo \"\$RESPONSE\" | grep -q \x27\"dbConnected\":true\x27; then',
+              '    echo \"Backend healthy and connected to PostgreSQL successfully!\"',
+              '    HEALTHY=1',
+              '    break',
               '  fi',
               '  sleep 5',
               'done',
-              'echo \"Backend health check failed after timeout\" >&2',
-              'exit 1'
+              'if [ \"\$HEALTHY\" -ne 1 ]; then',
+              '  echo \"ERROR: Backend health verification failed!\" >&2',
+              '  if [ -n \"\$PREV_IMAGE\" ] && [ \"\$PREV_IMAGE\" != \"$BACKEND_IMAGE\" ]; then',
+              '    echo \"Initiating safe rollback to previous working image: \$PREV_IMAGE...\" >&2',
+              '    docker stop taskmanager-backend 2>/dev/null || true',
+              '    docker rm taskmanager-backend 2>/dev/null || true',
+              '    docker run -d --name taskmanager-backend --restart unless-stopped -p 5000:5000 -e PORT=5000 -e NODE_ENV=production \$DB_ENV_FLAGS \"\$PREV_IMAGE\"',
+              '    echo \"Rollback container launched.\" >&2',
+              '  fi',
+              '  exit 1',
+              'fi',
+              'echo \"Backend deployment finished successfully.\"'
             ]" \
             --query "Command.CommandId" \
             --output text)
 
-          echo "SSM Command dispatched: $COMMAND_ID"
+          echo "Backend SSM Command dispatched: $COMMAND_ID"
           echo "Polling SSM execution status..."
 
           STATUS="Pending"
@@ -244,21 +290,21 @@ jobs:
           done
 
           if [ "$STATUS" != "Success" ]; then
-            echo "SSM Command failed with status: $STATUS"
+            echo "Backend deployment failed with SSM status: $STATUS"
             aws ssm list-command-invocations --command-id "$COMMAND_ID" --details --query "CommandInvocations[*].CommandPlugins[*].{Output:Output,Status:Status}" --output json
             exit 1
           fi
           echo "Backend deployment completed successfully."
 
-      # Deploy Frontend to Frontend EC2 (10.0.10.39)
-      - name: Deploy Frontend Tier (10.0.10.39)
+      # Deploy Frontend to Frontend EC2
+      - name: "[DEPLOY] Deploying frontend"
         env:
           FRONTEND_IMAGE: ${{ needs.build-and-scan.outputs.frontend_image }}:${{ needs.build-and-scan.outputs.image_tag }}
           FRONTEND_INSTANCE_ID: ${{ vars.FRONTEND_INSTANCE_ID }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Initiating Frontend EC2 Deployment with image: $FRONTEND_IMAGE"
+          echo "[DEPLOY] Initiating Frontend EC2 Deployment with image: $FRONTEND_IMAGE"
 
           if [ -n "$FRONTEND_INSTANCE_ID" ]; then
             TARGET_FLAG="--instance-ids $FRONTEND_INSTANCE_ID"
@@ -272,30 +318,45 @@ jobs:
             --comment "Deploy Task Manager Frontend ($FRONTEND_IMAGE)" \
             --parameters "commands=[
               'set -e',
-              'echo \"Authenticating to GHCR...\"',
+              'echo \"[1/5] Authenticating to GitHub Container Registry...\"',
               'echo \"$GHCR_TOKEN\" | docker login ghcr.io -u \"$GHCR_USER\" --password-stdin',
-              'echo \"Pulling frontend image $FRONTEND_IMAGE...\"',
+              'echo \"[2/5] Pulling frontend image: $FRONTEND_IMAGE...\"',
               'docker pull \"$FRONTEND_IMAGE\"',
-              'echo \"Deploying new frontend container...\"',
-              'docker stop taskmanager-frontend || true',
-              'docker rm taskmanager-frontend || true',
+              'echo \"[3/5] Inspecting current frontend container state for safe rollback...\"',
+              'PREV_IMAGE=\$(docker inspect -f \"{{.Config.Image}}\" taskmanager-frontend 2>/dev/null || echo \"\")',
+              'echo \"Previous frontend image recorded: \${PREV_IMAGE:-none}\"',
+              'echo \"[4/5] Deploying updated frontend container...\"',
+              'docker stop taskmanager-frontend 2>/dev/null || true',
+              'docker rm taskmanager-frontend 2>/dev/null || true',
               'docker run -d --name taskmanager-frontend --restart unless-stopped -p 80:80 \"$FRONTEND_IMAGE\"',
-              'echo \"Verifying frontend container HTTP response...\"',
+              'echo \"[5/5] [HEALTH] Checking frontend web server response on port 80...\"',
               'sleep 3',
-              'for i in {1..8}; do',
-              '  if wget -q --spider http://localhost:80/ || curl -s -f -I http://localhost:80/ >/dev/null; then',
-              '    echo \"Frontend web server running on port 80 successfully!\"',
-              '    exit 0',
+              'HEALTHY=0',
+              'for i in \$(seq 1 10); do',
+              '  if wget -q --spider http://localhost:80/ || curl -s -f -I http://localhost:80/ >/dev/null 2>&1; then',
+              '    echo \"Frontend web server verified successfully on port 80!\"',
+              '    HEALTHY=1',
+              '    break',
               '  fi',
               '  sleep 3',
               'done',
-              'echo \"Frontend verification timed out\" >&2',
-              'exit 1'
+              'if [ \"\$HEALTHY\" -ne 1 ]; then',
+              '  echo \"ERROR: Frontend health verification failed!\" >&2',
+              '  if [ -n \"\$PREV_IMAGE\" ] && [ \"\$PREV_IMAGE\" != \"$FRONTEND_IMAGE\" ]; then',
+              '    echo \"Initiating safe rollback to previous frontend image: \$PREV_IMAGE...\" >&2',
+              '    docker stop taskmanager-frontend 2>/dev/null || true',
+              '    docker rm taskmanager-frontend 2>/dev/null || true',
+              '    docker run -d --name taskmanager-frontend --restart unless-stopped -p 80:80 \"\$PREV_IMAGE\"',
+              '    echo \"Rollback frontend container launched.\" >&2',
+              '  fi',
+              '  exit 1',
+              'fi',
+              'echo \"Frontend deployment finished successfully.\"'
             ]" \
             --query "Command.CommandId" \
             --output text)
 
-          echo "SSM Command dispatched: $COMMAND_ID"
+          echo "Frontend SSM Command dispatched: $COMMAND_ID"
           echo "Polling SSM execution status..."
 
           STATUS="Pending"
@@ -306,15 +367,22 @@ jobs:
           done
 
           if [ "$STATUS" != "Success" ]; then
-            echo "SSM Command failed with status: $STATUS"
+            echo "Frontend deployment failed with SSM status: $STATUS"
             aws ssm list-command-invocations --command-id "$COMMAND_ID" --details --query "CommandInvocations[*].CommandPlugins[*].{Output:Output,Status:Status}" --output json
             exit 1
           fi
           echo "Frontend deployment completed successfully."
 
-      # Optional Health Verification through Public Nginx Ingress
-      - name: Verify Public Ingress Health
+      # Optional Health Verification through Public Ingress Proxy
+      - name: "[HEALTH] Checking public ingress"
         if: ${{ vars.PUBLIC_NGINX_HOST != '' }}
         run: |
-          echo "Verifying Public Ingress: http://${{ vars.PUBLIC_NGINX_HOST }}/api/health"
-          curl -f -s -S --connect-timeout 10 "http://${{ vars.PUBLIC_NGINX_HOST }}/api/health" || echo "Note: Public ingress check completed"
+          echo "[HEALTH] Checking public ingress endpoint: http://${{ vars.PUBLIC_NGINX_HOST }}/api/health"
+          RESPONSE=$(curl -f -s -S --connect-timeout 15 "http://${{ vars.PUBLIC_NGINX_HOST }}/api/health")
+          echo "Public Ingress Health Check Response: $RESPONSE"
+          if echo "$RESPONSE" | grep -q '"status":' && echo "$RESPONSE" | grep -q '"ok"'; then
+            echo "[HEALTH] Public ingress check passed! Application is live and operational."
+          else
+            echo "ERROR: Public ingress health check returned unexpected response: $RESPONSE" >&2
+            exit 1
+          fi
