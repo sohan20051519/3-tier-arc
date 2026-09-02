@@ -1,4 +1,4 @@
-name: AWS OIDC Test
+name: AWS OIDC Debug
 
 on:
   workflow_dispatch:
@@ -8,19 +8,46 @@ permissions:
   contents: read
 
 jobs:
-  test-aws-oidc:
-    name: Test GitHub to AWS OIDC
+  debug-oidc:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::468683594041:role/github-actions-taskmanager-deploy-role
-          aws-region: ${{ vars.AWS_REGION }}
-          audience: sts.amazonaws.com
-
-      - name: Verify AWS identity
+      - name: Inspect OIDC claims safely
+        shell: bash
         run: |
-          echo "AWS authentication successful!"
-          aws sts get-caller-identity
+          python - <<'PY'
+          import os
+          import json
+          import base64
+          import urllib.request
+
+          url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          token = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+
+          req = urllib.request.Request(
+              url + "&audience=sts.amazonaws.com",
+              headers={"Authorization": f"bearer {token}"}
+          )
+
+          response = urllib.request.urlopen(req)
+          oidc = json.load(response)
+          jwt = oidc["value"]
+
+          payload = jwt.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+
+          claims = json.loads(
+              base64.urlsafe_b64decode(payload)
+          )
+
+          print("OIDC claims:")
+          print(json.dumps({
+              "iss": claims.get("iss"),
+              "aud": claims.get("aud"),
+              "sub": claims.get("sub"),
+              "repository": claims.get("repository"),
+              "repository_owner": claims.get("repository_owner"),
+              "ref": claims.get("ref"),
+              "environment": claims.get("environment")
+          }, indent=2))
+          PY
