@@ -21,6 +21,9 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Upgrade OS packages to apply latest security patches
+RUN apk update && apk upgrade --no-cache
+
 # Install only production dependencies
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force

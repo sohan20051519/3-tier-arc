@@ -15,6 +15,9 @@ RUN npm run build
 # Stage 2: Production Nginx web server
 FROM nginx:alpine AS runner
 
+# Upgrade OS packages to apply latest security patches (resolves libcrypto3, libssl3, libexpat CVEs)
+RUN apk update && apk upgrade --no-cache
+
 # Copy built assets to Nginx html directory
 COPY --from=builder /app/dist /usr/share/nginx/html
 
