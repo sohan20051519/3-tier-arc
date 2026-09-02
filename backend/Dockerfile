@@ -24,15 +24,12 @@ ENV NODE_ENV=production
 # Upgrade OS packages to apply latest security patches
 RUN apk update && apk upgrade --no-cache
 
-# Upgrade global npm to latest version to patch bundled node-tar / npm vulnerabilities
-RUN npm install -g npm@latest
-
 # Install only production dependencies
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-# Remove global npm and corepack to eliminate build-tool CVE surface in production runtime
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /root/.npm
+# Remove corepack to eliminate build-tool CVE surface in production runtime
+RUN rm -rf /usr/local/lib/node_modules/corepack /root/.npm
 
 # Copy compiled JavaScript output from builder stage
 COPY --from=builder --chown=node:node /app/dist ./dist
