@@ -200,7 +200,6 @@ jobs:
         env:
           BACKEND_IMAGE: ${{ needs.build-and-scan.outputs.backend_image }}:${{ needs.build-and-scan.outputs.image_tag }}
           BACKEND_INSTANCE_ID: ${{ vars.BACKEND_INSTANCE_ID }}
-          DB_SECRET_ARN: ${{ vars.DB_SECRET_ARN }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -225,7 +224,7 @@ jobs:
               'echo \"[3/5] Inspecting current backend container state for safe rollback...\"',
               'PREV_IMAGE=\$(docker inspect -f \"{{.Config.Image}}\" taskmanager-backend 2>/dev/null || echo \"\")',
               'echo \"Previous image recorded: \${PREV_IMAGE:-none}\"',
-              'if [ -f /opt/taskmanager/docker-compose.backend.yml ]; then cd /opt/taskmanager; elif [ -f /app/docker-compose.backend.yml ]; then cd /app; elif [ -f /home/ubuntu/docker-compose.backend.yml ]; then cd /home/ubuntu; elif [ -f /home/ec2-user/docker-compose.backend.yml ]; then cd /home/ec2-user; fi',
+              'if [ -f /home/ssm-user/3-tier-arc/docker-compose.backend.yml ]; then cd /home/ssm-user/3-tier-arc; elif [ -f /opt/taskmanager/docker-compose.backend.yml ]; then cd /opt/taskmanager; elif [ -f /app/docker-compose.backend.yml ]; then cd /app; elif [ -f /home/ubuntu/docker-compose.backend.yml ]; then cd /home/ubuntu; elif [ -f /home/ec2-user/docker-compose.backend.yml ]; then cd /home/ec2-user; elif [ -f ./docker-compose.backend.yml ]; then cd .; else echo \"ERROR: docker-compose.backend.yml not found in /home/ssm-user/3-tier-arc or fallback directories!\" >&2; exit 1; fi',
               'echo \"[4/5] Deploying updated backend service via docker compose...\"',
               'BACKEND_IMAGE=\"$BACKEND_IMAGE\" docker compose -f docker-compose.backend.yml up -d --no-build --no-deps backend',
               'echo \"[5/5] Verifying backend health on http://localhost:5000/api/health...\"',
@@ -291,7 +290,7 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             $TARGET_FLAG \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy Task Manager Frontend ($FRONTEND_IMAGE)" \
+            --comment "Deploy Task Manager Frontend" \
             --parameters "commands=[
               'set -e',
               'echo \"[1/5] Authenticating to GitHub Container Registry...\"',
