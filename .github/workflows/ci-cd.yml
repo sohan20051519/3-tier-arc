@@ -215,7 +215,7 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             $TARGET_FLAG \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy Task Manager Backend ($BACKEND_IMAGE)" \
+            --comment "Deploy Task Manager Backend" \
             --parameters "commands=[
               'set -e',
               'echo \"[1/6] Authenticating to GitHub Container Registry...\"',
